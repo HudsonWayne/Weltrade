@@ -15,16 +15,14 @@ MA_SLOW = 15
 LOOP_SLEEP = 1.0
 SPIKE_MULTIPLIER = 2.0
 MIN_SPIKE_PCT = 0.0005  # 0.05%
+RISK_PCT = 0.005  # 0.5% ATR-based SL
 
-# Only generate signals for these types
 FILTER_KEYWORDS = ["gain","pain","fx","sfx","vol"]
 
-# Optional: Telegram alerts
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 # ===========================================
 
-# ----- MT5 initialization -----
 def init_mt5():
     if MT5_PATH:
         ok = mt5.initialize(path=MT5_PATH)
@@ -34,7 +32,6 @@ def init_mt5():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
     print("MT5 initialized.")
 
-# ----- Discover SyntX symbols automatically -----
 def discover_syntx():
     symbols = mt5.symbols_get()
     syntx_symbols = []
@@ -50,7 +47,6 @@ def discover_syntx():
     print("Monitoring SyntX instruments:", good_symbols)
     return good_symbols
 
-# ----- Fetch bars -----
 def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
     if rates is None or len(rates) == 0:
@@ -59,7 +55,6 @@ def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
     df['time'] = pd.to_datetime(df['time'], unit='s')
     return df
 
-# ----- Compute signals -----
 def compute_signal(df):
     if df.shape[0] < MA_SLOW + 5:
         return None
@@ -90,7 +85,33 @@ def compute_signal(df):
 
     return None
 
-# ----- Telegram alerts -----
+def calculate_sl_tp(signal, df):
+    """Estimate Stop-Loss and Take-Profit based on recent volatility (ATR-like)."""
+    atr = df['close'].pct_change().rolling(14).std().iloc[-1]
+    if np.isnan(atr) or atr == 0:
+        atr = MIN_SPIKE_PCT
+    entry = df['close'].iloc[-1]
+    if signal['type'] in ['BUY','SPIKE_UP']:
+        sl = entry * (1 - RISK_PCT)
+        tp = entry * (1 + RISK_PCT * 2)
+    elif signal['type'] in ['SELL','SPIKE_DOWN']:
+        sl = entry * (1 + RISK_PCT)
+        tp = entry * (1 - RISK_PCT * 2)
+    else:
+        sl, tp = entry, entry
+    return round(sl,5), round(tp,5)
+
+def format_signal(symbol, sig, df):
+    sl, tp = calculate_sl_tp(sig, df)
+    text = f"🔹 {symbol} - {sig['type']}\n"
+    text += f"   ⬆️ Entry: {sig['price']}\n"
+    text += f"   🛑 Stop-Loss: {sl}\n"
+    text += f"   🎯 Take-Profit: {tp}\n"
+    if 'pct' in sig:
+        text += f"   📊 Change%: {sig['pct']*100:.2f}%\n"
+    text += f"   ⏱ Time: {sig['time']}\n"
+    return text
+
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return False
@@ -102,7 +123,6 @@ def send_telegram(text):
         print("Telegram error:", e)
         return False
 
-# ----- Main loop -----
 def main():
     init_mt5()
     SYMBOLS = discover_syntx()
@@ -123,11 +143,9 @@ def main():
                     stamp = str(sig.get("time"))
                     if seen[s] == stamp: continue
                     seen[s] = stamp
-                    text = f"[{s}] {sig['type']} @ {sig.get('price')} (t={stamp})"
-                    if 'pct' in sig:
-                        text += f" pct={sig['pct']:.4f}"
-                    print(text)
-                    send_telegram(text)
+                    formatted = format_signal(s, sig, df)
+                    print(formatted)
+                    send_telegram(formatted)
             elapsed = time.time() - loop_start
             time.sleep(max(LOOP_SLEEP - elapsed, 0.1))
     except KeyboardInterrupt:
