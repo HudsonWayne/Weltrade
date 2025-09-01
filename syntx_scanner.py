@@ -5,25 +5,9 @@ import MetaTrader5 as mt5
 import pandas as pd
 import numpy as np
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()  # optional: store TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID in .env
 
 # ================== CONFIG ==================
 MT5_PATH = None  # optional: r"C:\Program Files\MetaTrader 5\terminal64.exe"
-
-# Exact Weltrade Synthetics
-SYMBOLS = [
-    # GainX / PainX
-    "GAIN","GANX","BDRY","DVOL",  # adjust PainX if needed
-
-    # FX Vol
-    "FX20","FX40","FX60","FX80","FX99",
-
-    # SFX Vol
-    "SFX20","SFX40","SFX60"
-]
-
 TIMEFRAME = mt5.TIMEFRAME_M1
 BARS = 300
 MA_FAST = 5
@@ -31,10 +15,14 @@ MA_SLOW = 15
 LOOP_SLEEP = 1.0
 SPIKE_MULTIPLIER = 2.0
 MIN_SPIKE_PCT = 0.0005  # 0.05%
-# ===========================================
 
+# Only generate signals for these types
+FILTER_KEYWORDS = ["gain","pain","fx","sfx","vol"]
+
+# Optional: Telegram alerts
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID")
+# ===========================================
 
 # ----- MT5 initialization -----
 def init_mt5():
@@ -46,16 +34,21 @@ def init_mt5():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
     print("MT5 initialized.")
 
-def select_symbols(symbols):
-    good = []
+# ----- Discover SyntX symbols automatically -----
+def discover_syntx():
+    symbols = mt5.symbols_get()
+    syntx_symbols = []
     for s in symbols:
-        info = mt5.symbol_info(s)
-        if info is None:
-            print(f"Symbol not found: {s}")
-            continue
+        name = s.name.lower()
+        desc = getattr(s, "description", "").lower()
+        if any(k in name or k in desc for k in FILTER_KEYWORDS):
+            syntx_symbols.append(s.name)
+    good_symbols = []
+    for s in syntx_symbols:
         mt5.symbol_select(s, True)
-        good.append(s)
-    return good
+        good_symbols.append(s)
+    print("Monitoring SyntX instruments:", good_symbols)
+    return good_symbols
 
 # ----- Fetch bars -----
 def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
@@ -91,9 +84,9 @@ def compute_signal(df):
                 "time":last['time']}
 
     if buy:
-        return {"type":"MA_BUY", "price":float(last['close']), "time":last['time']}
+        return {"type":"BUY", "price":float(last['close']), "time":last['time']}
     if sell:
-        return {"type":"MA_SELL", "price":float(last['close']), "time":last['time']}
+        return {"type":"SELL", "price":float(last['close']), "time":last['time']}
 
     return None
 
@@ -112,13 +105,11 @@ def send_telegram(text):
 # ----- Main loop -----
 def main():
     init_mt5()
-    global SYMBOLS
-    SYMBOLS = select_symbols(SYMBOLS)
+    SYMBOLS = discover_syntx()
     if not SYMBOLS:
-        print("No valid symbols selected. Exiting.")
+        print("No SyntX symbols found. Check Market Watch.")
         mt5.shutdown()
         return
-    print("Monitoring Weltrade Synthetics:", SYMBOLS)
 
     seen = {s: None for s in SYMBOLS}
     try:
@@ -138,8 +129,7 @@ def main():
                     print(text)
                     send_telegram(text)
             elapsed = time.time() - loop_start
-            to_sleep = max(LOOP_SLEEP - elapsed, 0.1)
-            time.sleep(to_sleep)
+            time.sleep(max(LOOP_SLEEP - elapsed, 0.1))
     except KeyboardInterrupt:
         print("Scanner stopped by user.")
     finally:
