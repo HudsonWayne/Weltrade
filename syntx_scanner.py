@@ -7,7 +7,7 @@ import numpy as np
 import requests
 
 # ================== CONFIG ==================
-MT5_PATH = None
+MT5_PATH = None  # Optional MT5 terminal path
 TIMEFRAME = mt5.TIMEFRAME_M1
 BARS = 300
 MA_FAST = 5
@@ -15,22 +15,14 @@ MA_SLOW = 15
 LOOP_SLEEP = 1.0
 SPIKE_MULTIPLIER = 2.0
 MIN_SPIKE_PCT = 0.0005
-RISK_PCT = 0.005  # 0.5% for SL/TP calculation
+RISK_PCT = 0.005  # 0.5% SL/TP
 
-# Focused Weltrade Synthetics
-SYMBOLS = [
-    # GainX / PainX
-    "GAIN",
-    # FX Vol
-    "FX20","FX40","FX60","FX80","FX99",
-    # SFX Vol
-    "SFX20","SFX40","SFX60"
-]
-
+# Telegram alerts (optional)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID")
 # ===========================================
 
+# ----- MT5 Initialization -----
 def init_mt5():
     if MT5_PATH:
         ok = mt5.initialize(path=MT5_PATH)
@@ -40,19 +32,19 @@ def init_mt5():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
     print("MT5 initialized.")
 
-def select_symbols(symbols):
-    """Select only symbols available in MT5 Market Watch."""
-    good = []
-    for s in symbols:
-        info = mt5.symbol_info(s)
-        if info is None:
-            print(f"Symbol not found: {s}")
-            continue
-        mt5.symbol_select(s, True)
-        good.append(s)
-    print("Monitoring Weltrade Synthetics:", good)
-    return good
+# ----- Auto-detect Weltrade Synthetics -----
+def detect_syntx_symbols():
+    all_symbols = mt5.symbols_get()
+    syntx_keywords = ["GAIN","PAIN","FX","SFX","VOL","DVOL","BDRY","GANX"]
+    available = []
+    for s in all_symbols:
+        if any(k in s.name.upper() for k in syntx_keywords):
+            mt5.symbol_select(s.name, True)
+            available.append(s.name)
+    print("Monitoring Weltrade Synthetics:", available)
+    return available
 
+# ----- Fetch historical bars -----
 def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
     if rates is None or len(rates) == 0:
@@ -61,6 +53,7 @@ def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
     df['time'] = pd.to_datetime(df['time'], unit='s')
     return df
 
+# ----- Compute signals -----
 def compute_signal(df):
     if df.shape[0] < MA_SLOW + 5:
         return None
@@ -75,7 +68,6 @@ def compute_signal(df):
 
     buy = (last['ma_fast'] > last['ma_slow']) and (prev['ma_fast'] <= prev['ma_slow'])
     sell = (last['ma_fast'] < last['ma_slow']) and (prev['ma_fast'] >= prev['ma_slow'])
-
     last_pct = last['pct'] if not np.isnan(last['pct']) else 0.0
 
     if abs(last_pct) >= spike_threshold:
@@ -83,29 +75,26 @@ def compute_signal(df):
                 "price":float(last['close']),
                 "pct":float(last_pct),
                 "time":last['time']}
-
     if buy:
         return {"type":"BUY", "price":float(last['close']), "time":last['time']}
     if sell:
         return {"type":"SELL", "price":float(last['close']), "time":last['time']}
-
     return None
 
+# ----- Calculate Stop-Loss & Take-Profit -----
 def calculate_sl_tp(signal, df):
-    atr = df['close'].pct_change().rolling(14).std().iloc[-1]
-    if np.isnan(atr) or atr == 0:
-        atr = MIN_SPIKE_PCT
     entry = df['close'].iloc[-1]
     if signal['type'] in ['BUY','SPIKE_UP']:
         sl = entry * (1 - RISK_PCT)
-        tp = entry * (1 + RISK_PCT * 2)
+        tp = entry * (1 + RISK_PCT*2)
     elif signal['type'] in ['SELL','SPIKE_DOWN']:
         sl = entry * (1 + RISK_PCT)
-        tp = entry * (1 - RISK_PCT * 2)
+        tp = entry * (1 - RISK_PCT*2)
     else:
         sl, tp = entry, entry
     return round(sl,5), round(tp,5)
 
+# ----- Format the signal nicely -----
 def format_signal(symbol, sig, df):
     sl, tp = calculate_sl_tp(sig, df)
     text = f"🔹 {symbol} - {sig['type']}\n"
@@ -117,6 +106,7 @@ def format_signal(symbol, sig, df):
     text += f"   ⏱ Time: {sig['time']}\n"
     return text
 
+# ----- Telegram alert -----
 def send_telegram(text):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return False
@@ -128,11 +118,12 @@ def send_telegram(text):
         print("Telegram error:", e)
         return False
 
+# ----- Main loop -----
 def main():
     init_mt5()
-    symbols = select_symbols(SYMBOLS)
+    symbols = detect_syntx_symbols()
     if not symbols:
-        print("No symbols found. Check Market Watch.")
+        print("No Weltrade Synthetics found. Check Market Watch.")
         mt5.shutdown()
         return
 
