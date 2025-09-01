@@ -11,11 +11,19 @@ load_dotenv()  # optional: store TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID in .env
 
 # ================== CONFIG ==================
 MT5_PATH = None  # optional: r"C:\Program Files\MetaTrader 5\terminal64.exe"
+
+# Exact Weltrade Synthetics
 SYMBOLS = [
-    "GAIN","GANX",
-    "FXA","FXB","FXC","FXD","FXE","FXED","FXF","FXG","FXH","FXI","FXL","FXN","FXNC","FXO","FXP","FXR","FXU","FXY","FXZ",
-    "IVOL","SVOL","XVOL","ZVOL"
+    # GainX / PainX
+    "GAIN","GANX","BDRY","DVOL",  # adjust PainX if needed
+
+    # FX Vol
+    "FX20","FX40","FX60","FX80","FX99",
+
+    # SFX Vol
+    "SFX20","SFX40","SFX60"
 ]
+
 TIMEFRAME = mt5.TIMEFRAME_M1
 BARS = 300
 MA_FAST = 5
@@ -68,11 +76,9 @@ def compute_signal(df):
     df['pct'] = df['close'].pct_change()
     last = df.iloc[-1]; prev = df.iloc[-2]
 
-    # dynamic spike threshold based on recent volatility
     vol = df['pct'].std()
     spike_threshold = max(MIN_SPIKE_PCT, SPIKE_MULTIPLIER * vol)
 
-    # MA crossover
     buy = (last['ma_fast'] > last['ma_slow']) and (prev['ma_fast'] <= prev['ma_slow'])
     sell = (last['ma_fast'] < last['ma_slow']) and (prev['ma_fast'] >= prev['ma_slow'])
 
