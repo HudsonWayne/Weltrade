@@ -7,17 +7,25 @@ import numpy as np
 import requests
 
 # ================== CONFIG ==================
-MT5_PATH = None  # optional: r"C:\Program Files\MetaTrader 5\terminal64.exe"
+MT5_PATH = None
 TIMEFRAME = mt5.TIMEFRAME_M1
 BARS = 300
 MA_FAST = 5
 MA_SLOW = 15
 LOOP_SLEEP = 1.0
 SPIKE_MULTIPLIER = 2.0
-MIN_SPIKE_PCT = 0.0005  # 0.05%
-RISK_PCT = 0.005  # 0.5% ATR-based SL
+MIN_SPIKE_PCT = 0.0005
+RISK_PCT = 0.005  # 0.5% for SL/TP calculation
 
-FILTER_KEYWORDS = ["gain","pain","fx","sfx","vol"]
+# Focused Weltrade Synthetics
+SYMBOLS = [
+    # GainX / PainX
+    "GAIN",
+    # FX Vol
+    "FX20","FX40","FX60","FX80","FX99",
+    # SFX Vol
+    "SFX20","SFX40","SFX60"
+]
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT = os.getenv("TELEGRAM_CHAT_ID")
@@ -32,20 +40,18 @@ def init_mt5():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
     print("MT5 initialized.")
 
-def discover_syntx():
-    symbols = mt5.symbols_get()
-    syntx_symbols = []
+def select_symbols(symbols):
+    """Select only symbols available in MT5 Market Watch."""
+    good = []
     for s in symbols:
-        name = s.name.lower()
-        desc = getattr(s, "description", "").lower()
-        if any(k in name or k in desc for k in FILTER_KEYWORDS):
-            syntx_symbols.append(s.name)
-    good_symbols = []
-    for s in syntx_symbols:
+        info = mt5.symbol_info(s)
+        if info is None:
+            print(f"Symbol not found: {s}")
+            continue
         mt5.symbol_select(s, True)
-        good_symbols.append(s)
-    print("Monitoring SyntX instruments:", good_symbols)
-    return good_symbols
+        good.append(s)
+    print("Monitoring Weltrade Synthetics:", good)
+    return good
 
 def get_bars(symbol, n=BARS, timeframe=TIMEFRAME):
     rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, n)
@@ -86,7 +92,6 @@ def compute_signal(df):
     return None
 
 def calculate_sl_tp(signal, df):
-    """Estimate Stop-Loss and Take-Profit based on recent volatility (ATR-like)."""
     atr = df['close'].pct_change().rolling(14).std().iloc[-1]
     if np.isnan(atr) or atr == 0:
         atr = MIN_SPIKE_PCT
@@ -125,17 +130,17 @@ def send_telegram(text):
 
 def main():
     init_mt5()
-    SYMBOLS = discover_syntx()
-    if not SYMBOLS:
-        print("No SyntX symbols found. Check Market Watch.")
+    symbols = select_symbols(SYMBOLS)
+    if not symbols:
+        print("No symbols found. Check Market Watch.")
         mt5.shutdown()
         return
 
-    seen = {s: None for s in SYMBOLS}
+    seen = {s: None for s in symbols}
     try:
         while True:
             loop_start = time.time()
-            for s in SYMBOLS:
+            for s in symbols:
                 df = get_bars(s)
                 if df.empty: continue
                 sig = compute_signal(df)
